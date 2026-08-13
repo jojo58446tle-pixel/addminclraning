@@ -11,19 +11,16 @@ Mobile-first Admin Quick Reply Control Panel สำหรับเลือก �
 3. ระบบเปิด Preview โดยยังไม่เรียก Backend
 4. กด “ยืนยันการส่ง”
 5. Backend ตรวจ Origin, Whitelist, Rate Limit และล็อก Client Request ID
-6. Backend ส่งเฉพาะ Action ID ไป Google Apps Script
-7. Google Apps Script Map ข้อความและเรียก `sendDingTalk(...)`
-8. บันทึกสถานะ SUCCESS, FAILED หรือ UNKNOWN
+6. Netlify Backend Map ข้อความและส่ง DingTalk Webhook โดยตรง
+7. บันทึกสถานะ SUCCESS, FAILED หรือ UNKNOWN
 
 ```text
 Mobile Browser
   -> POST /api/quick-reply (action + requestId)
 Netlify Next.js Function
   -> Origin / Whitelist / Rate Limit / Idempotency
-Google Apps Script Web App
-  -> Shared secret / Whitelist / Script Lock
-  -> sendDingTalk(title, message, markdown)
-DingTalk Robot -> Company Group
+  -> DingTalk Webhook
+DingTalk Workflow/Robot -> Company Group
 ```
 
 Webhook, Token และ Secret อยู่ฝั่ง Server เท่านั้น Frontend ส่งข้อความอิสระไม่ได้
@@ -33,7 +30,7 @@ Webhook, Token และ Secret อยู่ฝั่ง Server เท่าน�
 - Next.js App Router + React
 - Netlify Next.js adapter และ Server-side API Routes
 - Netlify Blobs แบบ strong consistency สำหรับ Request ID, Rate Limit และ History
-- Google Apps Script เป็น Gateway ไปยัง DingTalk
+- Netlify Server Function ส่งเข้า DingTalk โดยตรง
 - Node.js 22 ขึ้นไป
 
 ## Environment Variables
@@ -42,22 +39,20 @@ Webhook, Token และ Secret อยู่ฝั่ง Server เท่าน�
 
 | Variable | Required | รายละเอียด |
 | --- | --- | --- |
-| `GAS_ENDPOINT_URL` | Yes | URL `/exec` ของ Apps Script Web App |
-| `GAS_SHARED_SECRET` | Yes | ต้องตรงกับ Script Property |
+| `DINGTALK_WEBHOOK_URL` | Yes | URL Custom Robot เดิมที่ขึ้นต้นด้วย `https://oapi.dingtalk.com/robot/send` |
+| `DINGTALK_WEBHOOK_MODE` | Recommended | ใช้ `robot_markdown` |
 | `PUBLIC_APP_ORIGIN` | Recommended | Origin จริง เช่น `https://example.netlify.app` |
 | `LOCAL_STORAGE_MODE` | Local only | ใช้ `memory` เฉพาะเครื่องพัฒนา ห้ามตั้งบน Production |
 
 ตัวอย่างอยู่ใน `.env.example`
 
-สร้างค่าลับสำหรับ `GAS_SHARED_SECRET`:
+ไม่ต้องใช้ Google Apps Script, `GAS_ENDPOINT_URL` หรือ `GAS_SHARED_SECRET` ในโหมดนี้
 
-```bash
-node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
-```
+## Google Apps Script แบบเดิม (Legacy fallback)
 
-## เชื่อม Google Apps Script เดิม
+ส่วนนี้ไม่จำเป็นสำหรับการติดตั้งใหม่ ใช้เฉพาะกรณีที่องค์กรบังคับให้ส่งผ่าน Google Apps Script เท่านั้น
 
-ใช้ไฟล์ `google-apps-script/AdminCleaningQuickReply.gs`
+ใช้ไฟล์ `google-apps-script/AdminCleaningQuickReply.gs` เวอร์ชันนี้ส่ง Webhook ได้ด้วยตัวเอง ไม่ต้องมีฟังก์ชัน `sendDingTalk()` จากระบบเดิม
 
 ### 1. เพิ่มไฟล์โดยไม่แตะ Scheduler
 
@@ -72,31 +67,21 @@ if (payload.source === "admin-cleaning") {
 }
 ```
 
-### 2. ให้ `sendDingTalk` คืน Response
-
-Quick Reply ต้องตรวจผลตอบกลับ `errcode === 0` ฟังก์ชันเดิมจึงควร return ค่า response จาก `UrlFetchApp.fetch`:
-
-```javascript
-function sendDingTalk(title, message, markdown) {
-  // logic เดิมทั้งหมด
-  const response = UrlFetchApp.fetch(webhookUrl, options);
-  return response;
-}
-```
-
-การเพิ่ม `return response` ไม่เปลี่ยน Scheduler เดิม ถ้า `sendDingTalk` ไม่คืน Response ระบบจะบันทึก UNKNOWN และไม่ส่งซ้ำอัตโนมัติ
-
-### 3. ตั้ง Script Property
+### 2. ตั้ง Script Properties
 
 ไปที่ `Project Settings > Script Properties` แล้วเพิ่ม:
 
 ```text
 ADMIN_CLEANING_SHARED_SECRET = <ค่าเดียวกับ GAS_SHARED_SECRET บน Netlify>
+ADMIN_CLEANING_DINGTALK_WEBHOOK_URL = <Webhook URL จาก DingTalk>
+ADMIN_CLEANING_DINGTALK_MODE = workflow_text
 ```
+
+กรณีที่ใช้ DingTalk Custom Robot ให้เปลี่ยน Mode เป็น `robot_text` หรือ `robot_markdown` ส่วน Workflow ที่ตั้ง `Parameter format = Text` ให้ใช้ `workflow_text`
 
 ห้ามเขียน Secret ลงในไฟล์ `.gs`
 
-### 4. Deploy Web App
+### 3. Deploy Web App
 
 1. กด Deploy > New deployment
 2. เลือก Web app

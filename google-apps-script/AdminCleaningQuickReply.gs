@@ -5,8 +5,14 @@
  * It does not change Daily Cleaning, Weekly Cleaning, Smoking Weekly,
  * Smoking Monthly, or any time trigger.
  *
- * Required existing function:
- *   sendDingTalk(title, message, markdown)
+ * This version can send to DingTalk by itself. It no longer requires an
+ * existing sendDingTalk() function.
+ *
+ * Script properties:
+ *   ADMIN_CLEANING_SHARED_SECRET         required
+ *   ADMIN_CLEANING_DINGTALK_WEBHOOK_URL  required for direct delivery
+ *   ADMIN_CLEANING_DINGTALK_MODE         optional; workflow_text (default),
+ *                                         robot_text, or robot_markdown
  */
 
 const ADMIN_CLEANING_ACTIONS = Object.freeze({
@@ -42,6 +48,18 @@ const ADMIN_CLEANING_ACTIONS = Object.freeze({
  */
 function doPost(e) {
   return handleAdminCleaningQuickReply(e);
+}
+
+function doGet() {
+  const properties = PropertiesService.getScriptProperties();
+  return adminCleaningJson_({
+    ok: true,
+    system: "Admin Cleaning DingTalk Gateway",
+    webhookConfigured: Boolean(adminCleaningGetWebhookUrl_(properties)),
+    sharedSecretConfigured: Boolean(
+      properties.getProperty("ADMIN_CLEANING_SHARED_SECRET"),
+    ),
+  });
 }
 
 function handleAdminCleaningQuickReply(e) {
@@ -179,7 +197,11 @@ function handleAdminCleaningQuickReply(e) {
 
     let dingTalkResult;
     try {
-      dingTalkResult = sendDingTalk(reply.title, reply.message, markdown);
+      dingTalkResult = adminCleaningSendDingTalk_(
+        reply.title,
+        reply.message,
+        markdown,
+      );
     } catch (error) {
       properties.setProperty(
         propertyKey,
@@ -195,8 +217,7 @@ function handleAdminCleaningQuickReply(e) {
         status: "UNKNOWN",
         sent: null,
         requestId: requestId,
-        message:
-          "DingTalk result could not be confirmed. Do not retry automatically.",
+        message: String(error).slice(0, 300),
       });
     }
 
@@ -222,6 +243,71 @@ function handleAdminCleaningQuickReply(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+function adminCleaningGetWebhookUrl_(properties) {
+  return (
+    properties.getProperty("ADMIN_CLEANING_DINGTALK_WEBHOOK_URL") ||
+    properties.getProperty("DINGTALK_WEBHOOK_URL") ||
+    ""
+  ).trim();
+}
+
+function adminCleaningSendDingTalk_(title, message, markdown) {
+  const properties = PropertiesService.getScriptProperties();
+  const webhookUrl = adminCleaningGetWebhookUrl_(properties);
+
+  // Prefer the dedicated webhook because it gives this endpoint a real
+  // HTTP response that can be verified as SUCCESS or FAILED.
+  if (webhookUrl) {
+    if (!/^https:\/\//i.test(webhookUrl)) {
+      throw new Error("DingTalk webhook URL must use HTTPS");
+    }
+
+    const mode = String(
+      properties.getProperty("ADMIN_CLEANING_DINGTALK_MODE") ||
+        "workflow_text",
+    ).toLowerCase();
+    let contentType = "text/plain; charset=utf-8";
+    let payload = markdown;
+
+    if (mode === "robot_text") {
+      contentType = "application/json; charset=utf-8";
+      payload = JSON.stringify({
+        msgtype: "text",
+        text: { content: title + "\n" + message },
+        at: { isAtAll: false },
+      });
+    } else if (mode === "robot_markdown") {
+      contentType = "application/json; charset=utf-8";
+      payload = JSON.stringify({
+        msgtype: "markdown",
+        markdown: { title: title, text: markdown },
+        at: { isAtAll: false },
+      });
+    } else if (mode !== "workflow_text") {
+      throw new Error("Unsupported DingTalk mode: " + mode);
+    }
+
+    return UrlFetchApp.fetch(webhookUrl, {
+      method: "post",
+      contentType: contentType,
+      payload: payload,
+      followRedirects: true,
+      muteHttpExceptions: true,
+    });
+  }
+
+  // Backward compatibility for an older scheduler project. The older
+  // function must return UrlFetchApp.fetch(...). If it does not, the result
+  // remains UNKNOWN so the system never lies about delivery.
+  if (typeof sendDingTalk === "function") {
+    return sendDingTalk(title, message, markdown);
+  }
+
+  throw new Error(
+    "Missing ADMIN_CLEANING_DINGTALK_WEBHOOK_URL Script Property",
+  );
 }
 
 function adminCleaningPruneRequestProperties_(properties) {
@@ -265,21 +351,77 @@ function adminCleaningConfirmDingTalk_(result) {
       typeof result.getContentText === "function"
     ) {
       const responseCode = result.getResponseCode();
-      const content = JSON.parse(result.getContentText() || "{}");
-      if (responseCode >= 200 && responseCode < 300 && content.errcode === 0) {
+      const responseText = String(result.getContentText() || "").trim();
+      let content = null;
+      if (responseText) {
+        try {
+          content = JSON.parse(responseText);
+        } catch (error) {
+          content = null;
+        }
+      }
+
+      if (responseCode < 200 || responseCode >= 300) {
+        return {
+          status: "FAILED",
+          sent: false,
+          message:
+            "DingTalk HTTP " +
+            responseCode +
+            (responseText ? ": " + responseText.slice(0, 300) : ""),
+        };
+      }
+
+      if (content && Object.prototype.hasOwnProperty.call(content, "errcode")) {
+        if (Number(content.errcode) === 0) {
+          return {
+            status: "SUCCESS",
+            sent: true,
+            message: "DingTalk confirmed success",
+          };
+        }
+        return {
+          status: "FAILED",
+          sent: false,
+          message:
+            "DingTalk rejected the message: " +
+            String(content.errmsg || content.message || content.errcode),
+        };
+      }
+
+      if (content && content.success === false) {
+        return {
+          status: "FAILED",
+          sent: false,
+          message:
+            "DingTalk rejected the message: " +
+            String(content.message || content.error || "success=false"),
+        };
+      }
+
+      if (content && Object.prototype.hasOwnProperty.call(content, "code")) {
+        const code = Number(content.code);
+        if (Number.isFinite(code) && code !== 0 && code !== 200) {
+          return {
+            status: "FAILED",
+            sent: false,
+            message:
+              "DingTalk rejected the message: " +
+              String(content.message || content.code),
+          };
+        }
+      }
+
+      // DingTalk Workflow webhooks commonly return HTTP 2xx without the
+      // custom-robot errcode field. A successful HTTP response means the
+      // workflow accepted the trigger.
+      if (responseCode >= 200 && responseCode < 300) {
         return {
           status: "SUCCESS",
           sent: true,
-          message: "DingTalk confirmed success",
+          message: "DingTalk webhook accepted the message",
         };
       }
-      return {
-        status: "FAILED",
-        sent: false,
-        message:
-          "DingTalk rejected the message: " +
-          String(content.errmsg || responseCode),
-      };
     }
 
     if (typeof result === "object" && Number(result.errcode) === 0) {

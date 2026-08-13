@@ -86,6 +86,7 @@ export async function POST(request: Request) {
       title: reply.title,
       message: reply.message,
       status: outcome.status,
+      detail: outcome.detail,
     };
     const persistence = await Promise.allSettled([
       finalizeRequest(

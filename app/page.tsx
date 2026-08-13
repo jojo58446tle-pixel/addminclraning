@@ -20,6 +20,7 @@ type HistoryItem = {
   title: string;
   message: string;
   status: SendStatus;
+  detail?: string;
 };
 
 type SystemStatus = {
@@ -347,6 +348,9 @@ export default function Home() {
                       </div>
                       <strong>{item.title}</strong>
                       <p>{item.message}</p>
+                      {item.status !== "SUCCESS" && item.detail ? (
+                        <p className="history-detail">สาเหตุ: {item.detail}</p>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

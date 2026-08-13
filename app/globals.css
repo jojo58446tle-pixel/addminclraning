@@ -463,6 +463,13 @@ input:focus-visible {
   background: #fff3cf;
 }
 
+.history-list p.history-detail {
+  margin-top: 0.45rem;
+  color: #9a5b00;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
 .history-list strong {
   font-size: 14px;
 }

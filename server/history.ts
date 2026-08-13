@@ -8,6 +8,7 @@ export type HistoryItem = {
   title: string;
   message: string;
   status: DeliveryStatus;
+  detail?: string;
 };
 
 const HISTORY_KEY = "history/latest";
