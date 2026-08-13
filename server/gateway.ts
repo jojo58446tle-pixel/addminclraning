@@ -30,7 +30,7 @@ export async function sendToGateway(
   try {
     const response = await fetch(endpoint, {
       method: "POST",
-      redirect: "error",
+      redirect: "follow",
       headers: {
         "Content-Type": "application/json",
       },
